@@ -1,0 +1,15 @@
+title = "ChatGPT Codex Bridge gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic credentials used only to verify redaction tests"
+paths = [
+  '''tests/test_bridge_core\.py''',
+  '''tests/test_conversation_catalog\.py''',
+]
+regexes = [
+  '''sk-(?:proj-)?abcdefghijklmnopqrstuvwxyz(?:123456)?''',
+  '''postgresql://user:password@example\.test/db''',
+]

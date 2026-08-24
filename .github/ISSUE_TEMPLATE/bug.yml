@@ -1,0 +1,55 @@
+name: Bug report
+description: Report reproducible incorrect behavior without private data or credentials.
+title: "[Bug]: "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Do not include API keys, tokens, tunnel IDs, private project paths, source code,
+        session exports, or raw logs. Use SECURITY.md for vulnerabilities.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Bridge version or commit
+      placeholder: 0.1.0.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Linux
+        - Other or unsupported
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Use placeholders and synthetic data only.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Include error classes and status codes, but remove paths, IDs, keys, and content.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Safety checks
+      options:
+        - label: I removed credentials, private paths, project content, and session data.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

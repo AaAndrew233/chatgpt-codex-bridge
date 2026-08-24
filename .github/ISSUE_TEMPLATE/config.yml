@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: https://github.com/AaAndrew233/chatgpt-codex-bridge/security/advisories/new
+    about: Report vulnerabilities privately. Do not include real credentials.
+  - name: Official Secure MCP Tunnel documentation
+    url: https://github.com/openai/tunnel-client
+    about: Check current Tunnel installation, permission, and troubleshooting guidance.

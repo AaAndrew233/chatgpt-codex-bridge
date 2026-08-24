@@ -1,0 +1,16 @@
+{
+  "codex_command": "codex",
+  "model": null,
+  "codex_project_catalog": "~/.codex/.codex-global-state.json",
+  "allowed_roots": [],
+  "analysis_timeout_seconds": 600,
+  "apply_timeout_seconds": 1200,
+  "confirmation_ttl_seconds": 300,
+  "max_output_chars": 100000,
+  "max_handoff_context_chars": 80000,
+  "max_request_chars": 120000,
+  "project_context_max_chars": 500000,
+  "project_context_max_sessions": 1000,
+  "project_context_max_total_scan_bytes": 4294967296,
+  "project_context_max_session_scan_bytes": 1073741824
+}
