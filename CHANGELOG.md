@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] - 2026-08-24
+
+### Added
+
+- Session-scoped, time-limited authorization for projectless Codex Desktop conversations in the Recent section.
+- Metadata-only discovery for unassigned sessions and a confirmation-gated `codex_prepare_session_access` flow.
+
+### Security
+
+- Bound session grants to one sidebar-visible session, its canonical working directory, access mode, and expiration time.
+- Kept exact-request write confirmation mandatory in addition to session-level workspace access.
+- Enforced the selected working directory, approval policy, and sandbox policy on every resumed app-server turn.
+
 ## [0.1.0.0] - 2026-08-24
 
 ### Added

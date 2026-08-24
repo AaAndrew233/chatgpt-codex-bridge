@@ -1,6 +1,6 @@
 {
   "name": "codex-bridge",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "\u901a\u8fc7\u53d7\u9650\u672c\u5730 MCP \u670d\u52a1\uff0c\u8ba9 ChatGPT \u8c03\u7528\u672c\u673a Codex CLI\u3002",
   "author": {
     "name": "Local developer"

@@ -23,9 +23,23 @@ Project paths must resolve under either:
 
 Automatic discovery rejects the filesystem root, the user's home directory, and common credential/configuration directories. Symlinks are resolved before authorization decisions.
 
+### Session authorization
+
+Projectless conversations in Codex Desktop's Recent section are not project-authorized. They remain hidden from the default session list and their messages cannot be read until the user approves a session-level grant.
+
+A session grant is:
+
+- available only for a session visible in Codex Desktop's projectless Recent index,
+- cross-checked against the session file and read-only Desktop state database,
+- bound to the session ID, canonical working directory, and access mode,
+- stored only in process memory and time-limited,
+- unable to authorize the filesystem root, the user's home directory, or common sensitive directories.
+
+Granting `workspace-write` access does not approve a file change. Every write still requires a separate one-time token bound to the exact request.
+
 ### Execution boundary
 
-The bridge constructs argument arrays and uses `asyncio.create_subprocess_exec`; it does not interpolate caller input into a shell command. Read operations use the Codex `read-only` sandbox. Writes use `workspace-write` only after token validation.
+The bridge constructs argument arrays and uses `asyncio.create_subprocess_exec`; it does not interpolate caller input into a shell command. Read operations use the Codex `read-only` sandbox. Writes use `workspace-write` only after token validation. Every resumed Desktop turn explicitly overrides its canonical working directory, approval policy, and sandbox policy through the app-server protocol instead of relying on prompt text or sticky thread settings.
 
 ### Write confirmation
 
@@ -65,6 +79,7 @@ Session history, project files, and ChatGPT-provided context are untrusted data.
 - Keep Runtime Keys outside the repository in files with mode `0600`.
 - Use a Runtime Key for the daemon, never an Admin Key.
 - Keep `allowed_roots` narrow and review `codex_list_projects` before team use.
+- Review the exact session title, canonical directory, access mode, and task before approving a projectless-session grant.
 - Leave `model` as `null` unless the team intentionally pins a supported model.
 - Keep the bridge and `tunnel-client` updated from verified sources.
 - Run `./scripts/check_public_release.py` before every public release.

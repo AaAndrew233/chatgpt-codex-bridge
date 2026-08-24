@@ -242,6 +242,12 @@ class DesktopSessionClientTests(unittest.IsolatedAsyncioTestCase):
             params for method, params in client.params if method == "turn/start"
         )
         self.assertEqual(turn_params["model"], "gpt-5.6-sol")
+        self.assertEqual(turn_params["cwd"], str(Path("/tmp/project").resolve()))
+        self.assertEqual(turn_params["approvalPolicy"], "never")
+        self.assertEqual(
+            turn_params["sandboxPolicy"],
+            {"type": "readOnly", "networkAccess": False},
+        )
         metadata_params = next(
             params
             for method, params in client.params
@@ -380,9 +386,36 @@ class DesktopSessionClientTests(unittest.IsolatedAsyncioTestCase):
             params for method, params in client.params if method == "turn/start"
         )
         self.assertEqual(turn_params["model"], "gpt-5.6-sol")
+        self.assertEqual(turn_params["cwd"], str(Path("/tmp/project").resolve()))
+        self.assertEqual(
+            turn_params["sandboxPolicy"],
+            {"type": "readOnly", "networkAccess": False},
+        )
         self.assertEqual(len(client.processes), 1)
         self.assertEqual(client.initialized, 1)
         self.assertEqual(client.stopped, 1)
+
+    async def test_existing_thread_enforces_workspace_write_policy(self) -> None:
+        client = _FakeDesktopSessionClient()
+
+        await client.run_turn(
+            "thread-existing", Path("/tmp/project"), "修改", "workspace-write"
+        )
+
+        turn_params = next(
+            params for method, params in client.params if method == "turn/start"
+        )
+        self.assertEqual(turn_params["approvalPolicy"], "never")
+        self.assertEqual(
+            turn_params["sandboxPolicy"],
+            {
+                "type": "workspaceWrite",
+                "writableRoots": [str(Path("/tmp/project").resolve())],
+                "networkAccess": False,
+                "excludeSlashTmp": True,
+                "excludeTmpdirEnvVar": True,
+            },
+        )
 
 
 if __name__ == "__main__":

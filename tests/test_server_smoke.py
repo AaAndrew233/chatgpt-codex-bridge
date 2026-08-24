@@ -20,6 +20,7 @@ EXPECTED_TOOLS = {
     "codex_cancel_job",
     "codex_list_sessions",
     "codex_read_session",
+    "codex_prepare_session_access",
     "codex_create_desktop_session",
     "codex_continue_desktop_session",
     "codex_handoff_chat_context",

@@ -13,6 +13,7 @@ A local-first MCP bridge that lets ChatGPT inspect registered Codex projects, re
 - Runs analysis and planning in the Codex read-only sandbox.
 - Requires a short-lived, single-use confirmation token before workspace writes.
 - Lists and reads visible Codex sessions with cursor pagination and redaction.
+- Supports time-limited, user-confirmed access to individual projectless sessions in Codex Desktop's Recent section.
 - Builds bounded project-history context without loading multi-gigabyte histories into memory.
 - Creates and continues persistent Codex Desktop sessions through the local Codex app-server protocol.
 - Hands ChatGPT-provided context to Codex as untrusted reference text, with secret detection.
@@ -61,13 +62,15 @@ Open `config.json` and choose one authorization source:
   "codex_command": "codex",
   "model": null,
   "codex_project_catalog": "~/.codex/.codex-global-state.json",
-  "allowed_roots": []
+  "allowed_roots": [],
+  "session_access_ttl_seconds": 3600
 }
 ```
 
 - Keep `model` as `null` to inherit your current Codex configuration.
 - Keep `allowed_roots` empty to use only projects registered in Codex Desktop.
 - Add narrow project directories to `allowed_roots` only when automatic discovery is unavailable.
+- `session_access_ttl_seconds` controls the in-memory lifetime of an approved projectless-session grant and cannot exceed 24 hours.
 - Never authorize `/` or your home directory. The bridge rejects both.
 
 Run the local checks:
@@ -133,6 +136,8 @@ Do not modify files.
 
 For a write, ChatGPT must first call `codex_prepare_apply`, show you the exact plan, obtain your explicit confirmation, and only then call `codex_apply` with the returned token.
 
+For a projectless session under **Recent**, ChatGPT first calls `codex_list_sessions(include_unassigned=true)`. The result exposes only redacted sidebar metadata. It must then call `codex_prepare_session_access`, show you the session title, canonical working directory, access mode, and exact write request when applicable, and wait for explicit approval. The returned access token activates an in-memory grant for that session only. Workspace writes additionally require the exact-request confirmation token returned by the same preparation call.
+
 ## MCP tools
 
 | Tool | Purpose | Write confirmation |
@@ -149,6 +154,7 @@ For a write, ChatGPT must first call `codex_prepare_apply`, show you the exact p
 | `codex_cancel_job` | Cancel a queued or running job | No |
 | `codex_list_sessions` | List visible Codex sessions with pagination | No |
 | `codex_read_session` | Read visible user and assistant messages with redaction | No |
+| `codex_prepare_session_access` | Prepare a time-limited grant for one projectless Recent session | User approval |
 | `codex_create_desktop_session` | Create a persistent Codex Desktop session | Write mode only |
 | `codex_continue_desktop_session` | Continue a persistent session | Write mode only |
 | `codex_handoff_chat_context` | Create a session with explicit ChatGPT context | Write mode only |
@@ -158,6 +164,7 @@ For a write, ChatGPT must first call `codex_prepare_apply`, show you the exact p
 The trust boundary is intentionally narrow:
 
 - Project access is limited to validated Codex project roots or explicit narrow roots.
+- Projectless Recent sessions remain hidden by default and require a short-lived grant bound to one session, canonical directory, and mode.
 - Sensitive directories such as `.ssh`, `.aws`, `.gnupg`, `.kube`, `.config`, and `Library` are rejected during automatic discovery.
 - Codex subprocesses receive a minimal environment and run with explicit sandbox modes.
 - Write tokens expire, are single-use, and are bound to the exact project and request.
@@ -169,7 +176,7 @@ Read [docs/security-model.md](docs/security-model.md) before exposing the bridge
 
 ## Operational limits
 
-Default limits are documented in `config.example.json` and enforced at startup. Important defaults include two concurrent jobs, 30-minute completed-job retention, a 120,000-character request ceiling, paginated 100,000-character job output, and bounded streaming scans for project history.
+Default limits are documented in `config.example.json` and enforced at startup. Important defaults include two concurrent jobs, 30-minute completed-job retention, a one-hour session grant, a 120,000-character request ceiling, paginated 100,000-character job output, and bounded streaming scans for project history.
 
 `scan_complete` answers whether the configured source scan finished. `context_complete` separately answers whether all scanned text fit in the returned context budget. A complete scan is not the same as an unbounded export.
 

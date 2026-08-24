@@ -206,6 +206,9 @@ class DesktopSessionClient:
     ) -> dict[str, Any]:
         if not request.strip():
             raise DesktopSessionError("request 必须是非空字符串。")
+        if mode not in {"read-only", "workspace-write"}:
+            raise DesktopSessionError("mode 只能是 read-only 或 workspace-write。")
+        project = project.expanduser().resolve()
         prompt = self._prompt(project, request, mode)
         process = self._pending_processes.pop(session_id, None)
         pending_project_id = self._pending_project_ids.pop(session_id, None)
@@ -223,6 +226,9 @@ class DesktopSessionClient:
             turn_params: dict[str, Any] = {
                 "threadId": session_id,
                 "input": [{"type": "text", "text": prompt}],
+                "cwd": str(project),
+                "approvalPolicy": "never",
+                "sandboxPolicy": self._sandbox_policy(project, mode),
             }
             if self.model is not None:
                 turn_params["model"] = self.model
@@ -336,7 +342,7 @@ class DesktopSessionClient:
                     "clientInfo": {
                         "name": "codex_bridge",
                         "title": "Codex Bridge",
-                        "version": "0.1.0",
+                        "version": "0.2.0",
                     },
                     "capabilities": {"experimentalApi": True},
                 },
@@ -501,6 +507,18 @@ class DesktopSessionClient:
             "不要输出 Token、Cookie、密码、环境变量或完整连接串。\n\n"
             f"用户请求：\n{request.strip()}"
         )
+
+    @staticmethod
+    def _sandbox_policy(project: Path, mode: str) -> dict[str, Any]:
+        if mode == "read-only":
+            return {"type": "readOnly", "networkAccess": False}
+        return {
+            "type": "workspaceWrite",
+            "writableRoots": [str(project)],
+            "networkAccess": False,
+            "excludeSlashTmp": True,
+            "excludeTmpdirEnvVar": True,
+        }
 
     @staticmethod
     def _same_path(value: Any, expected: Path) -> bool:

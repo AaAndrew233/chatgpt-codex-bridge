@@ -11,6 +11,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from bridge_core import is_safe_workspace_root
+
 
 MAX_STATE_BYTES = 64 * 1024 * 1024
 SUMMARY_SCAN_BYTES = 4 * 1024 * 1024
@@ -45,9 +47,15 @@ class ConversationError(Exception):
 class ConversationCatalog:
     """只读读取 Codex 当前侧边栏可见的会话。"""
 
-    def __init__(self, state_path: Path, project_provider: Callable[[], tuple[Any, ...]]) -> None:
+    def __init__(
+        self,
+        state_path: Path,
+        project_provider: Callable[[], tuple[Any, ...]],
+        session_access_checker: Callable[[str, Path, str], bool] | None = None,
+    ) -> None:
         self.state_path = state_path
         self._project_provider = project_provider
+        self._session_access_checker = session_access_checker
 
     def list_sessions(
         self,
@@ -55,16 +63,20 @@ class ConversationCatalog:
         project_path: str | None = None,
         limit: int = MAX_LIST_LIMIT,
         include_archived: bool = False,
+        include_unassigned: bool = False,
         cursor: str | None = None,
     ) -> dict[str, Any]:
         if not isinstance(limit, int) or isinstance(limit, bool) or not 0 < limit <= MAX_LIST_LIMIT:
             raise ConversationError(f"limit 必须是 1 到 {MAX_LIST_LIMIT} 的整数。")
+        if not isinstance(include_unassigned, bool):
+            raise ConversationError("include_unassigned 必须是布尔值。")
         offset = self._decode_cursor(cursor, "s")
         records = [
             record
             for record, _ in self._session_records(
                 project_path=project_path,
                 include_archived=include_archived,
+                include_unassigned=include_unassigned,
             )
         ]
         page = records[offset : offset + limit]
@@ -87,6 +99,7 @@ class ConversationCatalog:
                 else "会话列表已读取完毕。"
             ),
             "include_archived": include_archived,
+            "include_unassigned": include_unassigned,
             "visibility": "codex-sidebar-visible-only",
             "refresh_policy": "live-per-call",
         }
@@ -118,7 +131,6 @@ class ConversationCatalog:
         context = visible.get(session_id.strip())
         if context is None:
             raise ConversationError("会话不存在、不可见或不属于当前 Codex 侧边栏。")
-        allowed = self._allowed_projects()
         path = self._find_file(session_id.strip(), include_archived)
         if path is None:
             raise ConversationError("会话文件不存在或已被 Codex 归档清理。")
@@ -130,15 +142,22 @@ class ConversationCatalog:
             max_scan_bytes=max_scan_bytes,
             before_message_index=before_message_index,
         )
-        project = self._session_project({**context, "cwd": parsed.get("cwd")}, allowed)
-        if project is None:
+        access = self._resolve_access(session_id.strip(), context, parsed)
+        if access["access_state"] != "authorized":
+            if access.get("access_scope") == "session":
+                raise ConversationError(
+                    "该会话位于侧边栏“最近”且没有项目授权；请先调用 "
+                    "codex_prepare_session_access，并在用户确认后携带令牌重试。"
+                )
             raise ConversationError("会话不属于当前已授权项目。")
         return {
             "ok": True,
             "session_id": session_id.strip(),
             "title": parsed.get("title") or "未命名对话",
-            "project_name": project.get("name"),
-            "project_path": project.get("path"),
+            "project_name": access.get("project_name"),
+            "project_path": access.get("project_root") or access.get("workspace_path"),
+            "workspace_path": access.get("workspace_path"),
+            "access_scope": access.get("access_scope"),
             "updated_at": parsed.get("updated_at"),
             "archived": "archived_sessions" in path.parts,
             "messages": parsed.get("messages", []),
@@ -154,6 +173,35 @@ class ConversationCatalog:
             ),
             "truncated": parsed.get("truncated", False),
             "read_policy": "仅返回用户消息和 Codex 可见回复，已过滤系统/开发者/推理/工具内容并脱敏。",
+        }
+
+    def session_descriptor(
+        self,
+        session_id: str,
+        *,
+        include_archived: bool = True,
+    ) -> dict[str, Any]:
+        """返回单会话授权所需的可信元数据，不返回消息正文。"""
+        normalized = self._validate_session_id(session_id)
+        visible = self._visible_threads()
+        context = visible.get(normalized)
+        if context is None:
+            raise ConversationError("会话不存在、不可见或不属于当前 Codex 侧边栏。")
+        path = self._find_file(normalized, include_archived)
+        if path is None:
+            raise ConversationError("会话文件不存在或已被 Codex 归档清理。")
+        parsed = self._parse_file(
+            path,
+            collect_messages=False,
+            max_scan_bytes=SUMMARY_SCAN_BYTES,
+        )
+        access = self._resolve_access(normalized, context, parsed)
+        return {
+            "session_id": normalized,
+            "title": parsed.get("title") or "未命名对话",
+            "updated_at": parsed.get("updated_at") or path.stat().st_mtime,
+            "archived": "archived_sessions" in path.parts,
+            **access,
         }
 
     def compatibility_snapshot(self, limit: int = MAX_LIST_LIMIT, preview_limit: int = 12) -> dict[str, Any]:
@@ -198,6 +246,7 @@ class ConversationCatalog:
         *,
         project_path: str | None,
         include_archived: bool,
+        include_unassigned: bool = False,
         session_files: list[Path] | None = None,
     ) -> list[tuple[dict[str, Any], Path]]:
         visible = self._visible_threads()
@@ -228,19 +277,33 @@ class ConversationCatalog:
                 collect_messages=False,
                 max_scan_bytes=SUMMARY_SCAN_BYTES,
             )
-            context = {**context, "cwd": summary.get("cwd")}
-            project = self._session_project(context, allowed)
-            if project is None:
+            try:
+                access = self._resolve_access(session_id, context, summary, allowed)
+            except ConversationError:
+                # 单个历史会话的状态索引不一致时将其隔离，不能拖垮整个列表。
                 continue
-            if project_path and not self._path_matches(project.get("path"), path_filter):
+            if access["access_state"] != "authorized" and not include_unassigned:
+                continue
+            if access["access_state"] == "ineligible":
+                continue
+            if project_path and not self._path_matches(
+                access.get("project_root") or access.get("workspace_path"),
+                path_filter,
+            ):
                 continue
             records.append(
                 (
                     {
                         "session_id": session_id,
                         "title": summary.get("title") or "未命名对话",
-                        "project_name": project.get("name"),
-                        "project_path": project.get("path"),
+                        "project_name": access.get("project_name"),
+                        "project_path": (
+                            access.get("project_root") or access.get("workspace_path")
+                            if access["access_state"] == "authorized"
+                            else None
+                        ),
+                        "access_scope": access.get("access_scope"),
+                        "access_state": access.get("access_state"),
                         "updated_at": summary.get("updated_at") or stat.st_mtime,
                         "archived": "archived_sessions" in path.parts,
                         "file_size_bytes": stat.st_size,
@@ -253,6 +316,87 @@ class ConversationCatalog:
             reverse=True,
         )
         return records
+
+    def _resolve_access(
+        self,
+        session_id: str,
+        context: dict[str, str | None],
+        parsed: dict[str, Any],
+        allowed: dict[str, dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        allowed = self._allowed_projects() if allowed is None else allowed
+        workspace = self._validated_workspace(context, parsed)
+        project = self._session_project(
+            {**context, "cwd": str(workspace) if workspace else None},
+            allowed,
+        )
+        if project is not None:
+            return {
+                "project_id": project.get("project_id"),
+                "project_name": project.get("name"),
+                "project_root": project.get("path"),
+                "workspace_path": str(workspace or Path(project["path"])),
+                "access_scope": "project",
+                "access_state": "authorized",
+            }
+        if context.get("project_id") is not None or workspace is None:
+            return {
+                "project_id": context.get("project_id"),
+                "project_name": context.get("project_name"),
+                "project_root": None,
+                "workspace_path": str(workspace) if workspace else None,
+                "access_scope": "none",
+                "access_state": "ineligible",
+            }
+        if not is_safe_workspace_root(workspace):
+            return {
+                "project_id": None,
+                "project_name": "最近",
+                "project_root": None,
+                "workspace_path": str(workspace),
+                "access_scope": "session",
+                "access_state": "ineligible",
+            }
+        authorized = bool(
+            self._session_access_checker
+            and self._session_access_checker(session_id, workspace, "read-only")
+        )
+        return {
+            "project_id": None,
+            "project_name": "最近",
+            "project_root": None,
+            "workspace_path": str(workspace),
+            "access_scope": "session",
+            "access_state": "authorized" if authorized else "authorization_required",
+        }
+
+    @staticmethod
+    def _validated_workspace(
+        context: dict[str, str | None],
+        parsed: dict[str, Any],
+    ) -> Path | None:
+        raw_cwd = parsed.get("cwd")
+        if not isinstance(raw_cwd, str) or not raw_cwd.strip():
+            return None
+        try:
+            workspace = Path(raw_cwd).expanduser().resolve()
+        except (OSError, RuntimeError) as exc:
+            raise ConversationError("会话工作目录无法安全解析。") from exc
+        indexed_cwd = context.get("cwd")
+        if isinstance(indexed_cwd, str) and indexed_cwd.strip():
+            try:
+                indexed = Path(indexed_cwd).expanduser().resolve()
+            except (OSError, RuntimeError) as exc:
+                raise ConversationError("Codex 状态索引中的工作目录无法安全解析。") from exc
+            if indexed != workspace:
+                raise ConversationError("会话工作目录与 Codex 状态索引不一致。")
+        return workspace
+
+    @staticmethod
+    def _validate_session_id(session_id: str) -> str:
+        if not isinstance(session_id, str) or not UUID_RE.fullmatch(session_id.strip()):
+            raise ConversationError("session_id 必须是 Codex 会话 UUID。")
+        return session_id.strip()
 
     def _allowed_projects(self) -> dict[str, dict[str, str]]:
         result: dict[str, dict[str, str]] = {}

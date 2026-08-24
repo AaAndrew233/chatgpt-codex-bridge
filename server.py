@@ -27,6 +27,7 @@ from bridge_core import (
     CodexRunner,
     ConfirmationStore,
     JobStore,
+    SessionAccessStore,
     compose_chat_handoff,
     unwrap_user_request,
     wrap_user_request,
@@ -57,6 +58,10 @@ def _startup() -> tuple[BridgeConfig, CodexRunner, ConfirmationStore]:
 
 
 CONFIG, RUNNER, CONFIRMATIONS = _startup()
+SESSION_ACCESS = SessionAccessStore(
+    CONFIG.confirmation_ttl_seconds,
+    CONFIG.session_access_ttl_seconds,
+)
 DESKTOP_CLIENT = DesktopSessionClient(
     CONFIG.codex_command,
     model=CONFIG.model,
@@ -123,12 +128,10 @@ class _CompositeRunner:
             session_id = payload.get("session_id")
             prompt = payload.get("request")
             project_id = payload.get("project_id")
-            if (
-                not isinstance(session_id, str)
-                or not isinstance(prompt, str)
-                or not isinstance(project_id, str)
-            ):
-                raise BridgeError("Desktop 会话任务缺少 session_id、project_id 或 request。")
+            if not isinstance(session_id, str) or not isinstance(prompt, str):
+                raise BridgeError("Desktop 会话任务缺少 session_id 或 request。")
+            if project_id is not None and not isinstance(project_id, str):
+                raise BridgeError("Desktop 会话任务的 project_id 无效。")
             try:
                 result = await self._desktop_client.run_turn(
                     session_id, project, prompt, mode
@@ -136,14 +139,22 @@ class _CompositeRunner:
             finally:
                 # thread/start 返回时会话可能尚未进入 Desktop 当前进程的任务缓存。
                 # 回合结束或失败后再次通知，确保刷新发生在持久状态稳定之后。
-                sidebar_sync = self._desktop_assignments.assign(session_id, project_id)
+                sidebar_sync = (
+                    self._desktop_assignments.assign(session_id, project_id)
+                    if project_id is not None
+                    else {"notified": False, "state": "not-applicable-projectless"}
+                )
             result["sidebar_sync"] = sidebar_sync
             return result
         return await self._codex_runner.run(project, request, mode)
 
 
 CONVERSATIONS = (
-    ConversationCatalog(CONFIG.codex_project_catalog, CONFIG.authorized_projects)
+    ConversationCatalog(
+        CONFIG.codex_project_catalog,
+        CONFIG.authorized_projects,
+        SESSION_ACCESS.allows,
+    )
     if CONFIG.codex_project_catalog is not None
     else None
 )
@@ -177,6 +188,7 @@ TOOL_NAMES = [
     "codex_cancel_job",
     "codex_list_sessions",
     "codex_read_session",
+    "codex_prepare_session_access",
     "codex_create_desktop_session",
     "codex_continue_desktop_session",
     "codex_handoff_chat_context",
@@ -220,6 +232,7 @@ async def codex_status(
             "tools": [
                 "codex_list_sessions",
                 "codex_read_session",
+                "codex_prepare_session_access",
                 "codex_prepare_project_context",
                 "codex_create_desktop_session",
                 "codex_continue_desktop_session",
@@ -250,6 +263,7 @@ async def codex_status(
             "model": CONFIG.model,
             "max_handoff_context_chars": CONFIG.max_handoff_context_chars,
             "max_request_chars": CONFIG.max_request_chars,
+            "session_access_ttl_seconds": CONFIG.session_access_ttl_seconds,
             "project_context": {
                 "max_context_chars": CONFIG.project_context_max_chars,
                 "max_sessions": CONFIG.project_context_max_sessions,
@@ -481,7 +495,7 @@ def _project_binding(project: Path) -> tuple[str, str, str]:
     raise BridgeError("项目不在 Codex 已登记项目内。")
 
 
-def _desktop_marker(session_id: str, project_id: str, request: str) -> str:
+def _desktop_marker(session_id: str, project_id: str | None, request: str) -> str:
     import json
 
     return "__codex_desktop_turn__" + json.dumps(
@@ -489,6 +503,44 @@ def _desktop_marker(session_id: str, project_id: str, request: str) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
     )
+
+
+def _session_workspace(session_id: str) -> tuple[dict[str, Any], Path]:
+    if CONVERSATIONS is None:
+        raise BridgeError("未配置 Codex 会话索引。")
+    descriptor = CONVERSATIONS.session_descriptor(session_id)
+    if descriptor.get("access_scope") != "session":
+        raise BridgeError("该会话已有项目授权，无需申请会话级授权。")
+    workspace_value = descriptor.get("workspace_path")
+    if not isinstance(workspace_value, str) or not workspace_value:
+        raise BridgeError("该会话没有可安全授权的工作目录。")
+    if descriptor.get("access_state") == "ineligible":
+        raise BridgeError("该会话的工作目录不符合会话级授权安全策略。")
+    return descriptor, Path(workspace_value).resolve()
+
+
+def _require_session_access(
+    session_id: str,
+    mode: str,
+    session_access_token: str | None,
+) -> tuple[dict[str, Any], Path]:
+    descriptor, workspace = _session_workspace(session_id)
+    if session_access_token is not None:
+        if not SESSION_ACCESS.activate(
+            session_access_token,
+            session_id,
+            workspace,
+            mode,
+        ):
+            raise BridgeError(
+                "会话授权令牌无效、已过期、已使用，或与会话/目录/模式不匹配。"
+            )
+    if not SESSION_ACCESS.allows(session_id, workspace, mode):
+        raise BridgeError(
+            "该“最近”会话尚未获得对应模式的临时授权；请先调用 "
+            "codex_prepare_session_access，并在用户确认后携带令牌重试。"
+        )
+    return descriptor, workspace
 
 
 async def _create_desktop_session(
@@ -583,6 +635,7 @@ async def _continue_desktop_session(
     mode: str,
     project_path: str | None,
     confirmation_token: str | None,
+    session_access_token: str | None,
 ) -> dict[str, Any]:
     """校验会话归属后提交一个继续同一 Desktop 线程的后台回合。"""
     if CONVERSATIONS is None:
@@ -598,14 +651,31 @@ async def _continue_desktop_session(
     if mode not in {"read-only", "workspace-write"}:
         raise BridgeError("mode 只能是 read-only 或 workspace-write。")
 
-    # 读取索引既验证会话仍在 Desktop 侧边栏可见范围，也取得默认项目目录。
-    detail = CONVERSATIONS.read_session(session_id, max_messages=1)
-    indexed_project = detail.get("project_path")
-    selected_path = project_path or indexed_project
-    if not isinstance(selected_path, str) or not selected_path:
-        raise BridgeError("该会话没有可用项目目录，请显式提供 project_path。")
-    project = CONFIG.resolve_project(selected_path)
-    project_id, _, _ = _project_binding(project)
+    descriptor = CONVERSATIONS.session_descriptor(session_id)
+    access_scope = descriptor.get("access_scope")
+    if access_scope == "project":
+        project_root = descriptor.get("project_root")
+        if not isinstance(project_root, str) or not project_root:
+            raise BridgeError("该会话缺少有效的项目授权目录。")
+        selected_path = project_path or project_root
+        project = CONFIG.resolve_project(selected_path)
+        project_id, bound_root, _ = _project_binding(project)
+        if (
+            descriptor.get("project_id") != project_id
+            or Path(bound_root).resolve() != Path(project_root).resolve()
+        ):
+            raise BridgeError("project_path 与该会话原有项目不匹配。")
+    elif access_scope == "session":
+        descriptor, project = _require_session_access(
+            session_id,
+            mode,
+            session_access_token,
+        )
+        if project_path is not None and Path(project_path).expanduser().resolve() != project:
+            raise BridgeError("project_path 与会话级授权绑定的工作目录不匹配。")
+        project_id = None
+    else:
+        raise BridgeError("该会话不符合项目授权或会话级授权策略。")
     reservation = JOBS.reserve(project, mode)
     try:
         if mode == "workspace-write":
@@ -690,6 +760,7 @@ async def codex_continue_desktop_session(
     mode: str = "read-only",
     project_path: str | None = None,
     confirmation_token: str | None = None,
+    session_access_token: str | None = None,
 ) -> dict[str, Any]:
     """继续已有 Codex Desktop 会话；项目路径默认从会话索引解析。"""
     try:
@@ -699,8 +770,59 @@ async def codex_continue_desktop_session(
             mode,
             project_path,
             confirmation_token,
+            session_access_token,
         )
     except (BridgeError, ConversationError, DesktopSessionError) as exc:
+        return {"ok": False, "error": str(exc)}
+
+
+@MCP.tool(
+    annotations=ToolAnnotations(
+        readOnlyHint=True, destructiveHint=False, idempotentHint=False, openWorldHint=False
+    )
+)
+async def codex_prepare_session_access(
+    session_id: str,
+    access_mode: str = "read-only",
+    request: str | None = None,
+) -> dict[str, Any]:
+    """为侧边栏“最近”的单个无项目会话准备短时授权；必须先向用户展示并确认。"""
+    try:
+        if access_mode not in SessionAccessStore.VALID_MODES:
+            raise BridgeError("access_mode 只能是 read-only 或 workspace-write。")
+        descriptor, workspace = _session_workspace(session_id)
+        if access_mode == "workspace-write":
+            if not isinstance(request, str) or not request.strip():
+                raise BridgeError("workspace-write 会话授权必须提供准确的 request。")
+            if len(request) > CONFIG.max_request_chars:
+                raise BridgeError(
+                    f"request 过长，最多允许 {CONFIG.max_request_chars} 个字符。"
+                )
+        token = SESSION_ACCESS.issue(session_id, workspace, access_mode)
+        result: dict[str, Any] = {
+            "ok": True,
+            "session_id": session_id,
+            "title": descriptor.get("title"),
+            "workspace_path": str(workspace),
+            "access_mode": access_mode,
+            "session_access_token": token,
+            "approval_expires_in_seconds": CONFIG.confirmation_ttl_seconds,
+            "grant_expires_in_seconds": CONFIG.session_access_ttl_seconds,
+            "next_step": (
+                "向用户展示会话标题、工作目录、访问模式和准确任务；取得明确确认后，"
+                "把 session_access_token 原样传给 codex_read_session 或 "
+                "codex_continue_desktop_session。"
+            ),
+        }
+        if access_mode == "workspace-write":
+            result["confirmation_token"] = CONFIRMATIONS.issue(workspace, request)
+            result["next_step"] = (
+                "向用户展示会话标题、工作目录和准确写入任务；取得明确确认后，"
+                "调用 codex_continue_desktop_session，并同时原样传入 "
+                "session_access_token、confirmation_token 和相同 request。"
+            )
+        return result
+    except (BridgeError, ConversationError) as exc:
         return {"ok": False, "error": str(exc)}
 
 
@@ -713,9 +835,10 @@ async def codex_list_sessions(
     project_path: str | None = None,
     limit: int = 200,
     include_archived: bool = False,
+    include_unassigned: bool = False,
     cursor: str | None = None,
 ) -> dict[str, Any]:
-    """列出 Codex 侧边栏可见会话，不返回原始会话文件。"""
+    """列出 Codex 侧边栏会话；include_unassigned 可显示待授权“最近”会话的元数据。"""
     if CONVERSATIONS is None:
         return {"ok": False, "error": "未配置 Codex 会话索引。"}
     try:
@@ -723,9 +846,10 @@ async def codex_list_sessions(
             project_path=project_path,
             limit=limit,
             include_archived=include_archived,
+            include_unassigned=include_unassigned,
             cursor=cursor,
         )
-    except ConversationError as exc:
+    except (BridgeError, ConversationError) as exc:
         return {"ok": False, "error": str(exc)}
 
 
@@ -740,11 +864,19 @@ async def codex_read_session(
     max_message_chars: int = 12000,
     max_scan_bytes: int = 64 * 1024 * 1024,
     cursor: str | None = None,
+    session_access_token: str | None = None,
 ) -> dict[str, Any]:
     """读取指定 Codex 会话的用户消息和可见 Codex 回复。"""
     if CONVERSATIONS is None:
         return {"ok": False, "error": "未配置 Codex 会话索引。"}
     try:
+        descriptor = CONVERSATIONS.session_descriptor(session_id)
+        if descriptor.get("access_scope") == "session":
+            _require_session_access(
+                session_id,
+                "read-only",
+                session_access_token,
+            )
         return CONVERSATIONS.read_session(
             session_id,
             max_messages=max_messages,
@@ -752,7 +884,7 @@ async def codex_read_session(
             max_scan_bytes=max_scan_bytes,
             cursor=cursor,
         )
-    except ConversationError as exc:
+    except (BridgeError, ConversationError) as exc:
         return {"ok": False, "error": str(exc)}
 
 

@@ -6,6 +6,7 @@
   "analysis_timeout_seconds": 600,
   "apply_timeout_seconds": 1200,
   "confirmation_ttl_seconds": 300,
+  "session_access_ttl_seconds": 3600,
   "max_output_chars": 100000,
   "max_handoff_context_chars": 80000,
   "max_request_chars": 120000,

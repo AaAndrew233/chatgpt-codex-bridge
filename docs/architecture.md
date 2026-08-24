@@ -16,7 +16,7 @@ The bridge never asks ChatGPT for a local credential and never exposes an arbitr
 | Module | Responsibility |
 | --- | --- |
 | `server.py` | MCP tools, request validation, orchestration, and tool annotations |
-| `bridge_core.py` | Configuration, project authorization, confirmation tokens, CLI execution, and background jobs |
+| `bridge_core.py` | Configuration, project and session authorization, confirmation tokens, CLI execution, and background jobs |
 | `conversation_catalog.py` | Read-only discovery, pagination, filtering, and redaction of visible Codex sessions |
 | `project_context.py` | Streaming, bounded project-history collection and coverage reporting |
 | `desktop_sessions.py` | Persistent Codex app-server thread creation, resume, and turn lifecycle |
@@ -41,6 +41,17 @@ The bridge never asks ChatGPT for a local credential and never exposes an arbitr
 
 Tokens are stored only in process memory, expire by default after five minutes, and cannot be replayed.
 
+### Projectless Recent session
+
+1. ChatGPT calls `codex_list_sessions(include_unassigned=true)` and receives redacted metadata, not message content or a working-directory path.
+2. ChatGPT calls `codex_prepare_session_access` for one session and access mode.
+3. The bridge cross-checks the sidebar index and session metadata, resolves the canonical working directory, and rejects broad or sensitive locations.
+4. The user reviews the title, directory, mode, and exact write request when applicable.
+5. ChatGPT passes the one-time access token to `codex_read_session` or `codex_continue_desktop_session`, activating an in-memory grant for that session and directory only.
+6. Workspace writes also consume a separate exact-request confirmation token.
+
+Session grants expire by default after one hour and disappear whenever the bridge restarts. Continuing a projectless session does not assign it to a synthetic Desktop project.
+
 ### Project-history context
 
 `ProjectContextCollector` streams visible session files and maintains bounded memory. It reports source-scan completeness separately from output completeness:
@@ -54,6 +65,7 @@ This distinction prevents a bounded summary from being represented as a complete
 
 - Local configuration is read at process startup. Codex project records are re-read on each relevant call.
 - Background jobs are process-local and intentionally disappear after a bridge restart.
+- Session-level grants are process-local and intentionally disappear after expiration or restart.
 - Persistent Codex Desktop sessions remain in Codex-owned storage.
 - Optional sidebar notification failure does not roll back a successfully created persistent session.
 - External service failures are returned as sanitized bridge errors without raw credential-bearing responses.

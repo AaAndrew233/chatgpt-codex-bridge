@@ -13,6 +13,7 @@
 - 分析和规划任务默认使用 Codex 只读沙箱。
 - 修改文件前必须使用短时、一次性、与完整请求绑定的确认令牌。
 - 分页列出和读取 Codex 可见会话，并对敏感信息脱敏。
+- 支持在用户确认后，短时授权访问 Codex Desktop“最近”中的单个无项目会话。
 - 流式整理项目历史，避免把数 GB 会话一次性载入内存。
 - 通过本地 Codex app-server 创建和续聊持久 Desktop 会话。
 - 把 ChatGPT 主动提供的上下文作为不可信参考资料交给 Codex，并拒绝明显密钥。
@@ -61,13 +62,15 @@ cd chatgpt-codex-bridge
   "codex_command": "codex",
   "model": null,
   "codex_project_catalog": "~/.codex/.codex-global-state.json",
-  "allowed_roots": []
+  "allowed_roots": [],
+  "session_access_ttl_seconds": 3600
 }
 ```
 
 - `model` 保持 `null`，即可继承当前 Codex 配置的模型。
 - `allowed_roots` 保持空数组，只使用 Codex Desktop 已登记项目。
 - 自动发现不可用时，才添加范围明确的项目目录。
+- `session_access_ttl_seconds` 控制无项目会话授权在内存中的有效时间，最长不能超过 24 小时。
 - 不要授权 `/` 或用户主目录，Bridge 也会拒绝这两种配置。
 
 运行本地检查：
@@ -131,6 +134,8 @@ tunnel-client runtimes status codex-bridge --json
 
 需要写入时，ChatGPT 必须先调用 `codex_prepare_apply`，向你展示完整计划并取得明确确认，然后才能携带返回令牌调用 `codex_apply`。
 
+对于“最近”中的无项目会话，ChatGPT 先调用 `codex_list_sessions(include_unassigned=true)`；此时只返回脱敏后的侧边栏元数据。随后必须调用 `codex_prepare_session_access`，向你展示会话标题、规范化工作目录、访问模式，以及写入时的准确任务，并等待明确确认。确认后的授权只保存在内存中，只绑定这一个会话。写入时还必须同时使用该准备调用返回的准确任务确认令牌。
+
 ## 工具清单
 
 | 工具 | 用途 | 是否需要写入确认 |
@@ -147,6 +152,7 @@ tunnel-client runtimes status codex-bridge --json
 | `codex_cancel_job` | 取消排队或运行中的任务 | 否 |
 | `codex_list_sessions` | 分页列出 Codex 可见会话 | 否 |
 | `codex_read_session` | 脱敏读取可见用户与助手消息 | 否 |
+| `codex_prepare_session_access` | 为一个无项目“最近”会话准备短时授权 | 需要用户确认 |
 | `codex_create_desktop_session` | 创建持久 Codex Desktop 会话 | 仅写入模式 |
 | `codex_continue_desktop_session` | 继续持久会话 | 仅写入模式 |
 | `codex_handoff_chat_context` | 使用显式 ChatGPT 上下文创建会话 | 仅写入模式 |
@@ -154,6 +160,7 @@ tunnel-client runtimes status codex-bridge --json
 ## 安全边界
 
 - 项目访问仅限通过校验的 Codex 项目根目录或明确配置的小范围目录。
+- 无项目“最近”会话默认隐藏，必须取得绑定单个会话、规范化目录和模式的短时授权。
 - 自动发现时拒绝 `.ssh`、`.aws`、`.gnupg`、`.kube`、`.config`、`Library` 等敏感目录。
 - Codex 子进程只继承最小环境，并使用明确的沙箱模式。
 - 写入令牌会过期、只能使用一次，并绑定项目与完整请求。
@@ -165,7 +172,7 @@ tunnel-client runtimes status codex-bridge --json
 
 ## 运行限制
 
-默认限制集中在 `config.example.json` 并在启动时校验，包括最多两个并发任务、完成结果保留 30 分钟、请求最多 120,000 字符、任务输出每页 100,000 字符，以及项目历史的流式扫描预算。
+默认限制集中在 `config.example.json` 并在启动时校验，包括最多两个并发任务、完成结果保留 30 分钟、会话授权保留 1 小时、请求最多 120,000 字符、任务输出每页 100,000 字符，以及项目历史的流式扫描预算。
 
 `scan_complete` 表示配置范围内的源数据是否扫描完成；`context_complete` 表示扫描到的原文是否全部放进当前输出预算。这两个状态不能混为一谈。
 

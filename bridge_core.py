@@ -111,6 +111,7 @@ class BridgeConfig:
     analysis_timeout_seconds: int = 600
     apply_timeout_seconds: int = 1200
     confirmation_ttl_seconds: int = 300
+    session_access_ttl_seconds: int = 3600
     max_output_chars: int = 100000
     max_handoff_context_chars: int = CHAT_CONTEXT_MAX_CHARS
     max_request_chars: int = REQUEST_MAX_CHARS
@@ -188,6 +189,9 @@ class BridgeConfig:
         project_context_max_session_scan_bytes = positive_int(
             "project_context_max_session_scan_bytes", 1024 * 1024 * 1024
         )
+        session_access_ttl_seconds = positive_int(
+            "session_access_ttl_seconds", 3600
+        )
         if not 10000 <= project_context_max_chars <= 2000000:
             raise BridgeError(
                 "project_context_max_chars 必须是 10000 到 2000000 的整数。"
@@ -202,6 +206,8 @@ class BridgeConfig:
             raise BridgeError(
                 "project_context_max_session_scan_bytes 不能超过 2 GiB。"
             )
+        if session_access_ttl_seconds > 24 * 60 * 60:
+            raise BridgeError("session_access_ttl_seconds 不能超过 86400 秒。")
 
         return cls(
             codex_command=command,
@@ -211,6 +217,7 @@ class BridgeConfig:
             analysis_timeout_seconds=positive_int("analysis_timeout_seconds", 600),
             apply_timeout_seconds=positive_int("apply_timeout_seconds", 1200),
             confirmation_ttl_seconds=positive_int("confirmation_ttl_seconds", 300),
+            session_access_ttl_seconds=session_access_ttl_seconds,
             max_output_chars=positive_int("max_output_chars", 100000),
             max_handoff_context_chars=positive_int(
                 "max_handoff_context_chars", CHAT_CONTEXT_MAX_CHARS
@@ -320,7 +327,7 @@ class ProjectCatalog:
                 if not isinstance(root_value, str) or not root_value.strip():
                     continue
                 root = Path(root_value).expanduser().resolve()
-                if self._is_safe_project_root(root):
+                if is_safe_workspace_root(root):
                     roots.append(root)
             if roots:
                 projects.append(
@@ -335,28 +342,37 @@ class ProjectCatalog:
 
     @staticmethod
     def _is_safe_project_root(root: Path) -> bool:
-        if not root.is_dir():
-            return False
-        home = Path.home().resolve()
-        if root in {Path("/"), home}:
-            return False
+        return is_safe_workspace_root(root)
 
-        managed_worktrees = (home / ".codex" / "worktrees").resolve()
-        if root == managed_worktrees or managed_worktrees in root.parents:
-            return True
 
-        sensitive_roots = [
-            home / ".ssh",
-            home / ".aws",
-            home / ".config",
-            home / ".gnupg",
-            home / ".kube",
-            home / "Library",
-        ]
-        return not any(
-            root == sensitive.resolve() or sensitive.resolve() in root.parents
-            for sensitive in sensitive_roots
-        )
+def is_safe_workspace_root(root: Path) -> bool:
+    """校验自动发现或会话级授权的工作目录，拒绝宽泛及敏感目录。"""
+    try:
+        root = root.expanduser().resolve()
+    except (OSError, RuntimeError):
+        return False
+    if not root.is_dir():
+        return False
+    home = Path.home().resolve()
+    if root in {Path("/"), home}:
+        return False
+
+    managed_worktrees = (home / ".codex" / "worktrees").resolve()
+    if root == managed_worktrees or managed_worktrees in root.parents:
+        return True
+
+    sensitive_roots = [
+        home / ".ssh",
+        home / ".aws",
+        home / ".config",
+        home / ".gnupg",
+        home / ".kube",
+        home / "Library",
+    ]
+    return not any(
+        root == sensitive.resolve() or sensitive.resolve() in root.parents
+        for sensitive in sensitive_roots
+    )
 
 
 class ConfirmationStore:
@@ -393,6 +409,108 @@ class ConfirmationStore:
         expired = [token for token, (_, deadline) in self._tokens.items() if deadline < now]
         for token in expired:
             self._tokens.pop(token, None)
+
+
+class SessionAccessStore:
+    """为单个无项目会话保存短时、目录绑定的内存授权。"""
+
+    VALID_MODES = {"read-only", "workspace-write"}
+
+    def __init__(self, approval_ttl_seconds: int, grant_ttl_seconds: int) -> None:
+        self._approval_ttl_seconds = approval_ttl_seconds
+        self._grant_ttl_seconds = grant_ttl_seconds
+        self._approvals: dict[str, tuple[str, float]] = {}
+        self._grants: dict[str, tuple[Path, str, float]] = {}
+
+    def issue(self, session_id: str, workspace: Path, mode: str) -> str:
+        workspace = self._validate(session_id, workspace, mode)
+        self._purge()
+        token = secrets.token_urlsafe(24)
+        self._approvals[token] = (
+            self._digest(session_id, workspace, mode),
+            time.monotonic() + self._approval_ttl_seconds,
+        )
+        return token
+
+    def activate(
+        self,
+        token: str,
+        session_id: str,
+        workspace: Path,
+        mode: str,
+    ) -> bool:
+        workspace = self._validate(session_id, workspace, mode)
+        self._purge()
+        record = self._approvals.pop(token, None)
+        if not record:
+            return False
+        digest, expires_at = record
+        if expires_at < time.monotonic() or not secrets.compare_digest(
+            digest, self._digest(session_id, workspace, mode)
+        ):
+            return False
+
+        existing = self._grants.get(session_id)
+        grant_mode = mode
+        if existing and existing[0] == workspace and existing[1] == "workspace-write":
+            grant_mode = "workspace-write"
+        self._grants[session_id] = (
+            workspace,
+            grant_mode,
+            time.monotonic() + self._grant_ttl_seconds,
+        )
+        return True
+
+    def allows(self, session_id: str, workspace: Path, mode: str) -> bool:
+        workspace = self._validate(session_id, workspace, mode)
+        self._purge()
+        record = self._grants.get(session_id)
+        if not record:
+            return False
+        granted_workspace, granted_mode, expires_at = record
+        mode_allowed = granted_mode == "workspace-write" or mode == "read-only"
+        return (
+            expires_at >= time.monotonic()
+            and granted_workspace == workspace
+            and mode_allowed
+        )
+
+    @property
+    def grant_ttl_seconds(self) -> int:
+        return self._grant_ttl_seconds
+
+    @staticmethod
+    def _validate(session_id: str, workspace: Path, mode: str) -> Path:
+        if not isinstance(session_id, str) or not session_id.strip():
+            raise BridgeError("session_id 必须是非空字符串。")
+        if mode not in SessionAccessStore.VALID_MODES:
+            raise BridgeError("access_mode 只能是 read-only 或 workspace-write。")
+        resolved = workspace.expanduser().resolve()
+        if not is_safe_workspace_root(resolved):
+            raise BridgeError("会话工作目录不存在、范围过宽或属于敏感目录。")
+        return resolved
+
+    @staticmethod
+    def _digest(session_id: str, workspace: Path, mode: str) -> str:
+        payload = f"{session_id}\0{workspace}\0{mode}".encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _purge(self) -> None:
+        now = time.monotonic()
+        expired_approvals = [
+            token
+            for token, (_, deadline) in self._approvals.items()
+            if deadline < now
+        ]
+        for token in expired_approvals:
+            self._approvals.pop(token, None)
+        expired_grants = [
+            session_id
+            for session_id, (_, _, deadline) in self._grants.items()
+            if deadline < now
+        ]
+        for session_id in expired_grants:
+            self._grants.pop(session_id, None)
 
 
 class CodexRunner:

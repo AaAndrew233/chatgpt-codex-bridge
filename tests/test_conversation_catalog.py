@@ -51,8 +51,35 @@ class ConversationCatalogTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def catalog(self):
-        return ConversationCatalog(self.state, lambda: (ProjectRecord("p1", "测试项目", (self.project,), "test"),))
+    def catalog(self, session_access_checker=None):
+        return ConversationCatalog(
+            self.state,
+            lambda: (ProjectRecord("p1", "测试项目", (self.project,), "test"),),
+            session_access_checker,
+        )
+
+    def add_projectless_session(self):
+        workspace = self.root / "recent-workspace"
+        workspace.mkdir()
+        session_id = "019f8422-9576-75f3-81b8-67f0a13578c3"
+        path = self.file.with_name(
+            f"rollout-2026-08-21T00-01-00-{session_id}.jsonl"
+        )
+        path.write_text("\n".join([
+            json.dumps({"type": "session_meta", "payload": {
+                "id": session_id,
+                "cwd": str(workspace),
+                "timestamp": "2026-08-21T00:01:00Z",
+            }}),
+            json.dumps({"type": "event_msg", "payload": {
+                "type": "user_message",
+                "message": "最近会话任务",
+            }}),
+        ]) + "\n", encoding="utf-8")
+        state = json.loads(self.state.read_text(encoding="utf-8"))
+        state["projectless-thread-ids"].append(session_id)
+        self.state.write_text(json.dumps(state), encoding="utf-8")
+        return session_id, workspace
 
     def test_list_and_read_are_project_scoped_and_redacted(self):
         catalog = self.catalog()
@@ -149,6 +176,71 @@ class ConversationCatalogTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ConversationError, "已授权项目"):
             catalog.read_session(unauthorized_session)
+
+    def test_projectless_session_requires_explicit_session_access(self):
+        session_id, workspace = self.add_projectless_session()
+        catalog = self.catalog()
+
+        default_listing = catalog.list_sessions()
+        self.assertNotIn(
+            session_id,
+            {item["session_id"] for item in default_listing["sessions"]},
+        )
+        discovery = catalog.list_sessions(include_unassigned=True)
+        item = next(
+            item for item in discovery["sessions"] if item["session_id"] == session_id
+        )
+        self.assertEqual(item["access_scope"], "session")
+        self.assertEqual(item["access_state"], "authorization_required")
+        self.assertIsNone(item["project_path"])
+        with self.assertRaisesRegex(ConversationError, "prepare_session_access"):
+            catalog.read_session(session_id)
+
+        descriptor = catalog.session_descriptor(session_id)
+        self.assertEqual(descriptor["workspace_path"], str(workspace.resolve()))
+        self.assertEqual(descriptor["access_state"], "authorization_required")
+
+    def test_projectless_session_grant_only_unlocks_matching_session(self):
+        session_id, workspace = self.add_projectless_session()
+
+        def checker(candidate_session, candidate_workspace, mode):
+            return (
+                candidate_session == session_id
+                and candidate_workspace == workspace.resolve()
+                and mode == "read-only"
+            )
+
+        catalog = self.catalog(checker)
+        result = catalog.read_session(session_id)
+        self.assertEqual(result["access_scope"], "session")
+        self.assertEqual(result["project_name"], "最近")
+        self.assertEqual(result["workspace_path"], str(workspace.resolve()))
+        self.assertEqual(result["messages"][0]["text"], "最近会话任务")
+
+        listed = catalog.list_sessions()
+        item = next(
+            item for item in listed["sessions"] if item["session_id"] == session_id
+        )
+        self.assertEqual(item["access_state"], "authorized")
+
+    def test_mismatched_session_workspace_is_isolated_from_listing(self):
+        session_id, workspace = self.add_projectless_session()
+        with closing(sqlite3.connect(self.state_db)) as connection:
+            connection.execute(
+                "INSERT INTO threads (id, project_id, cwd, archived, preview) "
+                "VALUES (?, NULL, ?, 0, ?)",
+                (session_id, str(self.root / "different-workspace"), "冲突会话"),
+            )
+            connection.commit()
+
+        catalog = self.catalog()
+        listing = catalog.list_sessions(include_unassigned=True)
+        self.assertNotIn(
+            session_id,
+            {item["session_id"] for item in listing["sessions"]},
+        )
+        with self.assertRaisesRegex(ConversationError, "工作目录.*不一致"):
+            catalog.session_descriptor(session_id)
 
     def test_state_db_threads_refresh_without_restart(self):
         second_session = "019f8422-9576-75f3-81b8-67f0a13578c3"

@@ -11,6 +11,7 @@ from bridge_core import (
     CodexRunner,
     JobStore,
     ProjectCatalog,
+    SessionAccessStore,
     compose_chat_handoff,
     prepare_chat_context,
     unwrap_user_request,
@@ -99,6 +100,24 @@ class BridgeCoreTests(unittest.TestCase):
         with self.assertRaisesRegex(BridgeError, "project_context_max_chars"):
             BridgeConfig.load(config_path)
 
+    def test_load_validates_session_access_ttl(self):
+        root = self.tmp_path / "session-access-workspace"
+        root.mkdir()
+        config_path = self.tmp_path / "session-access-config.json"
+        config_path.write_text(
+            json.dumps(
+                {
+                    "codex_command": "codex",
+                    "allowed_roots": [str(root)],
+                    "session_access_ttl_seconds": 86401,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(BridgeError, "session_access_ttl_seconds"):
+            BridgeConfig.load(config_path)
+
 
     def test_confirmation_is_single_use_and_bound_to_request(self):
         config = make_config(self.tmp_path)
@@ -119,6 +138,46 @@ class BridgeCoreTests(unittest.TestCase):
         token = store.issue(project, "change")
         time.sleep(1.05)
         self.assertFalse(store.consume(token, project, "change"))
+
+    def test_session_access_is_bound_to_session_workspace_and_mode(self):
+        workspace = self.tmp_path / "recent-workspace"
+        other_workspace = self.tmp_path / "other-workspace"
+        workspace.mkdir()
+        other_workspace.mkdir()
+        store = SessionAccessStore(10, 60)
+
+        token = store.issue("session-a", workspace, "read-only")
+        self.assertFalse(
+            store.activate(token, "session-b", workspace, "read-only")
+        )
+        self.assertFalse(store.allows("session-a", workspace, "read-only"))
+
+        token = store.issue("session-a", workspace, "read-only")
+        self.assertTrue(
+            store.activate(token, "session-a", workspace, "read-only")
+        )
+        self.assertTrue(store.allows("session-a", workspace, "read-only"))
+        self.assertFalse(
+            store.allows("session-a", workspace, "workspace-write")
+        )
+        self.assertFalse(store.allows("session-a", other_workspace, "read-only"))
+
+    def test_workspace_write_session_grant_also_allows_read(self):
+        workspace = self.tmp_path / "recent-workspace"
+        workspace.mkdir()
+        store = SessionAccessStore(10, 60)
+        token = store.issue("session-a", workspace, "workspace-write")
+
+        self.assertTrue(
+            store.activate(token, "session-a", workspace, "workspace-write")
+        )
+        self.assertTrue(store.allows("session-a", workspace, "workspace-write"))
+        self.assertTrue(store.allows("session-a", workspace, "read-only"))
+
+    def test_session_access_rejects_broad_workspace(self):
+        store = SessionAccessStore(10, 60)
+        with self.assertRaisesRegex(BridgeError, "敏感目录"):
+            store.issue("session-a", Path.home(), "read-only")
 
 
     def test_extract_output_prefers_agent_messages(self):
