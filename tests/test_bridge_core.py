@@ -333,13 +333,17 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
 
         submitted = store.submit(project, "分析", "read-only")
         self.assertEqual(submitted["status"], "queued")
+        self.assertEqual(submitted["protocol_state"], "INIT")
         await asyncio.sleep(0)
-        self.assertEqual(store.status(submitted["job_id"])["job"]["status"], "running")
+        running = store.status(submitted["job_id"])["job"]
+        self.assertEqual(running["status"], "running")
+        self.assertEqual(running["protocol_state"], "EXECUTING")
 
         runner.release.set()
         await asyncio.sleep(0.01)
         result = store.result(submitted["job_id"])
         self.assertTrue(result["ready"])
+        self.assertEqual(result["job"]["protocol_state"], "EXECUTED")
         self.assertEqual(result["result"]["output"], "分析")
 
     async def test_background_failure_is_returned_as_job_result(self):
@@ -348,6 +352,7 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(0.01)
         result = store.result(submitted["job_id"])
         self.assertFalse(result["ok"])
+        self.assertEqual(result["job"]["protocol_state"], "ERROR")
         self.assertEqual(result["error"], "模拟失败")
 
     async def test_cancel_marks_running_job_terminal(self):
@@ -359,7 +364,9 @@ class JobStoreTests(unittest.IsolatedAsyncioTestCase):
         cancelled = store.cancel(submitted["job_id"])
         await asyncio.sleep(0)
         self.assertTrue(cancelled["cancelled"])
-        self.assertEqual(store.status(submitted["job_id"])["job"]["status"], "cancelled")
+        cancelled_job = store.status(submitted["job_id"])["job"]
+        self.assertEqual(cancelled_job["status"], "cancelled")
+        self.assertEqual(cancelled_job["protocol_state"], "CANCELLED")
 
     async def test_capacity_rejects_new_job_when_all_slots_are_active(self):
         runner = FakeRunner(block=True)

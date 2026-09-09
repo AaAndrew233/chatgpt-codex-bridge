@@ -1,14 +1,14 @@
 {
   "name": "codex-bridge",
-  "version": "0.2.0",
-  "description": "\u901a\u8fc7\u53d7\u9650\u672c\u5730 MCP \u670d\u52a1\uff0c\u8ba9 ChatGPT \u8c03\u7528\u672c\u673a Codex CLI\u3002",
+  "version": "0.3.0",
+  "description": "Codex with ChatGPT：让 ChatGPT 规划、读取和确认后指挥本机 Codex。",
   "author": {
     "name": "Local developer"
   },
   "interface": {
-    "displayName": "Codex \u672c\u5730\u6865\u63a5",
-    "shortDescription": "\u901a\u8fc7 MCP \u8c03\u7528\u672c\u673a Codex CLI\u3002",
-    "longDescription": "\u5c06 ChatGPT \u7f51\u9875\u7aef\u8fde\u63a5\u5230\u672c\u673a Codex CLI\u3002\u4ec5\u5141\u8bb8\u8bbf\u95ee\u767d\u540d\u5355\u9879\u76ee\u76ee\u5f55\uff0c\u5206\u6790\u548c\u8ba1\u5212\u53ef\u76f4\u63a5\u6267\u884c\uff0c\u6587\u4ef6\u4fee\u6539\u9700\u8981\u786e\u8ba4\u4ee4\u724c\u3002",
+    "displayName": "Codex with ChatGPT",
+    "shortDescription": "让 ChatGPT 规划并确认后指挥本机 Codex。",
+    "longDescription": "本地优先的 MCP 桥接，让 ChatGPT 查看多个 Codex Desktop 项目和会话，并在项目、会话和写入确认边界内调用本机 Codex CLI 或 app-server。",
     "developerName": "ChatGPT Codex Bridge contributors",
     "category": "Productivity",
     "capabilities": [

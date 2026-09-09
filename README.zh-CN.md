@@ -1,8 +1,10 @@
-# ChatGPT Codex Bridge
+# Codex with ChatGPT
 
 [English](README.md) | [安全策略](SECURITY.md) | [参与贡献](CONTRIBUTING.md)
 
-这是一个本地优先的 MCP 桥接服务，让 ChatGPT 能够查看已登记的 Codex 项目、读取 Codex 会话历史，并在用户确认后把任务交给本机 Codex CLI 执行。
+ChatGPT 负责思考，Codex 负责执行。`codex-with-chatgpt` 是一个本地优先的 MCP 桥接，让 ChatGPT 查看多个 Codex Desktop 项目和会话，并在用户确认后把任务交给本机 Codex CLI 或 app-server 执行。
+
+产品名称是 **Codex with ChatGPT**。为了兼容已有安装，仓库地址和 Runtime 别名仍保留为 `chatgpt-codex-bridge` 和 `codex-bridge`。
 
 > [!IMPORTANT]
 > 这是独立的社区项目，不是 OpenAI 官方产品，也未获得 OpenAI 的关联或背书。ChatGPT、Codex、OpenAI 是其权利人的商标。
@@ -18,6 +20,7 @@
 - 通过本地 Codex app-server 创建和续聊持久 Desktop 会话。
 - 把 ChatGPT 主动提供的上下文作为不可信参考资料交给 Codex，并拒绝明显密钥。
 - 长任务在后台运行，避免 MCP Tunnel 单次请求长期占用后超时。
+- 用 `INIT` → `EXECUTING` → `EXECUTED / ERROR` 的执行协议，让 ChatGPT 能稳定轮询和复核任务。
 
 Bridge 不提供任意 Shell 工具，也不会自行监听公网端口。远程连接使用 OpenAI 官方 [Secure MCP Tunnel client](https://github.com/openai/tunnel-client)。
 
@@ -34,6 +37,18 @@ flowchart LR
 ```
 
 侧边栏实时刷新依赖非公开、非官方支持的 Codex Desktop 扩展，本仓库不包含该扩展。核心 Bridge 不依赖它；没有扩展时，持久会话仍会创建，但可能要重启 Codex Desktop 才会出现在侧边栏。
+
+## 工作流程
+
+```text
+ChatGPT 提出任务
+  → Bridge 校验项目或会话边界
+  → Codex 在有界沙箱中执行
+  → ChatGPT 轮询任务并读取全部输出分页
+  → ChatGPT 复核结果并决定下一步
+```
+
+Bridge 负责执行状态，ChatGPT 负责规划和复核。任务完成不等于写入已获批，工作区写入仍必须经过准确请求确认流程。
 
 ## 环境要求
 
@@ -117,6 +132,18 @@ tunnel-client runtimes status codex-bridge --json
 
 长期运行的 Runtime 不要使用 Admin Key。不要提交 Runtime Key、Tunnel ID、生成的 Profile、`config.json` 或 `.mcp.json`。
 
+## 更新与刷新
+
+修改桥接代码后，需要重启后台 Runtime。只有新增、删除或修改 MCP 工具名称、描述、输入结构或权限注解时，才需要在 ChatGPT 连接器页面点击刷新。刷新后要新建 ChatGPT 对话，确保模型拿到最新工具定义。
+
+```text
+代码更新                     → 重启本机 Bridge / Runtime
+工具结构或元数据更新         → 重启 Runtime → 刷新连接器 → 新建 ChatGPT 对话
+Tunnel ID 或账号更换         → 重新连接连接器
+```
+
+`codex_status` 会返回桥接版本、工具 Schema 版本和这套维护规则，便于识别网页端是否还在使用旧工具清单。
+
 ## 在 ChatGPT 中首次测试
 
 新建一个 ChatGPT 对话，启用连接器后发送：
@@ -140,7 +167,7 @@ tunnel-client runtimes status codex-bridge --json
 
 | 工具 | 用途 | 是否需要写入确认 |
 | --- | --- | --- |
-| `codex_status` | 健康状态、能力、项目、任务和兼容快照 | 否 |
+| `codex_status` | 健康状态、桥接/工具版本、维护规则、项目、任务和兼容快照 | 否 |
 | `codex_list_projects` | 列出已授权 Codex 项目 | 否 |
 | `codex_prepare_project_context` | 自动整理有界、可分页的项目历史 | 否 |
 | `codex_analyze` | 提交只读 Codex 任务 | 否 |
@@ -186,7 +213,7 @@ tunnel-client runtimes status codex-bridge --json
   desktop_sessions.py project_context.py server.py
 ```
 
-模块边界见 [docs/architecture.md](docs/architecture.md)，贡献要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
+模块边界见 [docs/architecture.md](docs/architecture.md)，更新维护见 [docs/update.md](docs/update.md)，贡献要求见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ## 许可证
 

@@ -51,6 +51,19 @@ CONFIG_PATH = Path(
     )
 ).expanduser()
 
+PRODUCT_NAME = "Codex with ChatGPT"
+BRIDGE_VERSION = (
+    Path(__file__).with_name("VERSION").read_text(encoding="utf-8").strip()
+    if Path(__file__).with_name("VERSION").is_file()
+    else "unknown"
+)
+TOOL_SCHEMA_VERSION = "2026-09-09"
+EXECUTION_PROTOCOL = {
+    "states": ["INIT", "EXECUTING", "EXECUTED", "ERROR", "CANCELLED"],
+    "review_state_owner": "ChatGPT",
+    "execution_state_owner": "Codex Bridge",
+}
+
 
 def _startup() -> tuple[BridgeConfig, CodexRunner, ConfirmationStore]:
     config = BridgeConfig.load(CONFIG_PATH)
@@ -174,7 +187,7 @@ JOBS = JobStore(
     max_request_chars=CONFIG.max_request_chars,
     max_result_output_chars=CONFIG.max_output_chars,
 )
-MCP = FastMCP("Codex 本地桥接")
+MCP = FastMCP(PRODUCT_NAME)
 TOOL_NAMES = [
     "codex_status",
     "codex_list_projects",
@@ -249,6 +262,24 @@ async def codex_status(
                 session_payload["error"] = str(exc)
         return {
             "ok": True,
+            "bridge": {
+                "name": PRODUCT_NAME,
+                "slug": "codex-with-chatgpt",
+                "version": BRIDGE_VERSION,
+                "tool_schema_version": TOOL_SCHEMA_VERSION,
+            },
+            "maintenance": {
+                "code_update": "restart_bridge",
+                "tool_schema_update": "refresh_chatgpt_connector_then_start_a_new_conversation",
+                "connector_refresh_required_when": [
+                    "tool_added_or_removed",
+                    "tool_name_changed",
+                    "tool_description_changed",
+                    "tool_schema_or_annotations_changed",
+                ],
+                "new_conversation_required_after_refresh": True,
+            },
+            "execution_protocol": EXECUTION_PROTOCOL,
             "codex_command": command,
             "manual_allowed_roots": [str(root) for root in CONFIG.allowed_roots],
             "codex_project_catalog": (

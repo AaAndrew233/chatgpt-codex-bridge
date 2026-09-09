@@ -1,8 +1,10 @@
-# ChatGPT Codex Bridge
+# Codex with ChatGPT
 
 [简体中文](README.zh-CN.md) | [Security](SECURITY.md) | [Contributing](CONTRIBUTING.md)
 
-A local-first MCP bridge that lets ChatGPT inspect registered Codex projects, read Codex session history, and dispatch confirmed tasks to the local Codex CLI.
+ChatGPT thinks. Codex works. `codex-with-chatgpt` is a local-first MCP bridge that lets ChatGPT inspect multiple Codex Desktop projects and sessions, then dispatch confirmed work to the local Codex CLI or app-server.
+
+The product name is **Codex with ChatGPT**. The repository slug and existing runtime alias remain `chatgpt-codex-bridge` and `codex-bridge` for compatibility with existing installations.
 
 > [!IMPORTANT]
 > This is an independent community project. It is not an official OpenAI product and is not affiliated with or endorsed by OpenAI. ChatGPT, Codex, and OpenAI are trademarks of their respective owner.
@@ -18,6 +20,7 @@ A local-first MCP bridge that lets ChatGPT inspect registered Codex projects, re
 - Creates and continues persistent Codex Desktop sessions through the local Codex app-server protocol.
 - Hands ChatGPT-provided context to Codex as untrusted reference text, with secret detection.
 - Uses background jobs so long Codex tasks do not hold an MCP tunnel request open.
+- Reports a small execution protocol (`INIT` → `EXECUTING` → `EXECUTED` / `ERROR`) so ChatGPT can poll and review tasks consistently.
 
 The bridge does not expose an arbitrary shell tool and does not listen on a public port. Remote access is provided by the official [OpenAI Secure MCP Tunnel client](https://github.com/openai/tunnel-client).
 
@@ -34,6 +37,18 @@ flowchart LR
 ```
 
 The optional sidebar refresh path depends on a private, unsupported Codex Desktop extension and is not included in this repository. The core bridge works without it; newly created persistent sessions may require a Codex Desktop restart before they appear in the sidebar.
+
+## How the workflow works
+
+```text
+ChatGPT asks for a task
+  → Bridge validates the project or session boundary
+  → Codex runs in a bounded sandbox
+  → ChatGPT polls the job and reads every output page
+  → ChatGPT reviews the result and asks for the next step
+```
+
+The bridge keeps the execution state and ChatGPT keeps the planning/review state. A task result never means that a write was approved: workspace writes still require the exact-request confirmation flow.
 
 ## Requirements
 
@@ -117,6 +132,18 @@ Then create or refresh the connector in [ChatGPT connector settings](https://cha
 
 Do not use an admin key for the long-running runtime. Do not commit runtime keys, tunnel IDs, generated profiles, `config.json`, or `.mcp.json`.
 
+## Updating and refreshing
+
+After changing bridge code, restart the managed runtime. A connector refresh is only needed when the MCP tool list, tool names, descriptions, input schemas, or annotations change. After refreshing metadata, start a new ChatGPT conversation so it receives the current tool definitions.
+
+```text
+Code update                    → restart the local bridge/runtime
+Tool schema or metadata change → restart runtime → Refresh connector → new ChatGPT conversation
+Tunnel ID or account change    → reconnect the connector
+```
+
+`codex_status` reports the bridge version, tool schema version, and this maintenance policy so a stale ChatGPT conversation can be diagnosed instead of silently falling back to an older workflow.
+
 ## First test in ChatGPT
 
 Start a new ChatGPT conversation with the connector enabled and ask:
@@ -142,7 +169,7 @@ For a projectless session under **Recent**, ChatGPT first calls `codex_list_sess
 
 | Tool | Purpose | Write confirmation |
 | --- | --- | --- |
-| `codex_status` | Health, capabilities, projects, jobs, and compatibility snapshot | No |
+| `codex_status` | Health, bridge/tool versions, maintenance policy, projects, jobs, and compatibility snapshot | No |
 | `codex_list_projects` | List authorized Codex projects | No |
 | `codex_prepare_project_context` | Build bounded, paginated project history context | No |
 | `codex_analyze` | Submit a read-only Codex task | No |
@@ -190,7 +217,7 @@ Default limits are documented in `config.example.json` and enforced at startup. 
   desktop_sessions.py project_context.py server.py
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution rules and [docs/architecture.md](docs/architecture.md) for module boundaries.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution rules, [docs/architecture.md](docs/architecture.md) for module boundaries, and [docs/update.md](docs/update.md) for maintenance and connector refresh rules.
 
 ## License
 

@@ -768,6 +768,7 @@ class JobStore:
             "ok": True,
             "job_id": record.job_id,
             "status": record.status,
+            "protocol_state": JobStore._protocol_state(record.status),
             "project": str(record.project),
             "mode": record.mode,
             "next_step": "调用 codex_job_status 查询进度，完成后调用 codex_job_result 获取结果。",
@@ -927,6 +928,7 @@ class JobStore:
         return {
             "job_id": record.job_id,
             "status": record.status,
+            "protocol_state": cls._protocol_state(record.status),
             "ready": record.status in cls.TERMINAL_STATUSES,
             "project": str(record.project),
             "mode": record.mode,
@@ -934,6 +936,17 @@ class JobStore:
             "started_at": cls._format_timestamp(record.started_at),
             "finished_at": cls._format_timestamp(record.finished_at),
         }
+
+    @staticmethod
+    def _protocol_state(status: str) -> str:
+        """将内部任务状态映射为 ChatGPT 可稳定理解的执行协议状态。"""
+        return {
+            "queued": "INIT",
+            "running": "EXECUTING",
+            "succeeded": "EXECUTED",
+            "failed": "ERROR",
+            "cancelled": "CANCELLED",
+        }.get(status, "ERROR")
 
     @staticmethod
     def _format_timestamp(value: float | None) -> str | None:

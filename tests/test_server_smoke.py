@@ -101,6 +101,65 @@ class ServerSmokeTests(unittest.TestCase):
         }
         self.assertEqual(tools, EXPECTED_TOOLS)
 
+        status_messages = [
+            messages[0],
+            messages[1],
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {"name": "codex_status", "arguments": {}},
+            },
+        ]
+        with tempfile.TemporaryDirectory() as status_dir:
+            status_root = Path(status_dir) / "project"
+            status_root.mkdir()
+            status_config = Path(status_dir) / "config.json"
+            status_config.write_text(
+                json.dumps(
+                    {
+                        "codex_command": sys.executable,
+                        "model": None,
+                        "codex_project_catalog": None,
+                        "allowed_roots": [str(status_root)],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            status_completed = subprocess.run(
+                [sys.executable, str(root / "server.py")],
+                input=("".join(json.dumps(item) + "\n" for item in status_messages)).encode(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                cwd=root,
+                env={**os.environ, "CODEX_BRIDGE_CONFIG": str(status_config)},
+                timeout=20,
+                check=False,
+            )
+        status_responses = [
+            json.loads(line)
+            for line in status_completed.stdout.splitlines()
+            if line.strip()
+        ]
+        status_response = next(
+            (response for response in status_responses if response.get("id") == 3),
+            None,
+        )
+        self.assertEqual(
+            status_completed.returncode,
+            0,
+            status_completed.stderr.decode("utf-8", errors="replace")[:1000],
+        )
+        self.assertIsNotNone(status_response)
+        status_text = status_response["result"]["content"][0]["text"]
+        status = json.loads(status_text)
+        self.assertEqual(status["bridge"]["name"], "Codex with ChatGPT")
+        self.assertEqual(status["bridge"]["version"], "0.3.0")
+        self.assertEqual(
+            status["maintenance"]["tool_schema_update"],
+            "refresh_chatgpt_connector_then_start_a_new_conversation",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

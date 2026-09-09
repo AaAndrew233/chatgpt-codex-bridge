@@ -1,4 +1,4 @@
-# Architecture
+# Codex with ChatGPT Architecture
 
 ## Trust boundaries
 
@@ -23,6 +23,17 @@ The bridge never asks ChatGPT for a local credential and never exposes an arbitr
 | `desktop_assignment.py` | Optional local Unix-socket notification for an unsupported Desktop extension |
 
 ## Request lifecycle
+
+### Execution protocol
+
+Bridge job responses expose a small execution protocol for stable polling:
+
+```text
+INIT → EXECUTING → EXECUTED
+                  ↘ ERROR / CANCELLED
+```
+
+`PLAN`, `REVIEW`, and `DONE` remain ChatGPT-side planning states. The Bridge reports only local execution facts and never treats a completed process as user approval or a successful review.
 
 ### Read-only analysis
 

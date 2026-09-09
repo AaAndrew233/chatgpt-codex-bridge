@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] - 2026-09-09
+
+### Added
+
+- Repositioned the product as **Codex with ChatGPT**, while keeping the existing repository and Runtime aliases compatible.
+- Added explicit execution protocol states to background jobs so ChatGPT can distinguish queued, running, completed, failed, and cancelled work.
+- Added bridge version, tool schema version, and connector maintenance guidance to `codex_status`.
+- Added an update and maintenance guide covering Runtime restarts, connector metadata refresh, and new-conversation boundaries.
+
+### Security
+
+- Kept project, session, and exact-request write authorization unchanged while exposing only maintenance metadata in status responses.
+
 ## [0.2.0] - 2026-08-24
 
 ### Added
