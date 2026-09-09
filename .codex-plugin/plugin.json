@@ -1,6 +1,6 @@
 {
   "name": "codex-bridge",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Codex with ChatGPT：让 ChatGPT 规划、读取和确认后指挥本机 Codex。",
   "author": {
     "name": "Local developer"

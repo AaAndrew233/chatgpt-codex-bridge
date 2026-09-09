@@ -75,7 +75,7 @@ class ServerSmokeTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=root,
-                env=environment,
+                env={**environment, "PYTHONUNBUFFERED": "1"},
                 timeout=20,
                 check=False,
             )
@@ -94,7 +94,11 @@ class ServerSmokeTests(unittest.TestCase):
             0,
             completed.stderr.decode("utf-8", errors="replace")[:1000],
         )
-        self.assertIsNotNone(tool_response)
+        self.assertIsNotNone(
+            tool_response,
+            completed.stdout.decode("utf-8", errors="replace")
+            + completed.stderr.decode("utf-8", errors="replace")[:2000],
+        )
         tools = {
             item.get("name")
             for item in tool_response.get("result", {}).get("tools", [])
@@ -132,7 +136,11 @@ class ServerSmokeTests(unittest.TestCase):
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 cwd=root,
-                env={**os.environ, "CODEX_BRIDGE_CONFIG": str(status_config)},
+                env={
+                    **os.environ,
+                    "CODEX_BRIDGE_CONFIG": str(status_config),
+                    "PYTHONUNBUFFERED": "1",
+                },
                 timeout=20,
                 check=False,
             )
@@ -150,11 +158,15 @@ class ServerSmokeTests(unittest.TestCase):
             0,
             status_completed.stderr.decode("utf-8", errors="replace")[:1000],
         )
-        self.assertIsNotNone(status_response)
+        self.assertIsNotNone(
+            status_response,
+            status_completed.stdout.decode("utf-8", errors="replace")
+            + status_completed.stderr.decode("utf-8", errors="replace")[:2000],
+        )
         status_text = status_response["result"]["content"][0]["text"]
         status = json.loads(status_text)
         self.assertEqual(status["bridge"]["name"], "Codex with ChatGPT")
-        self.assertEqual(status["bridge"]["version"], "0.3.0")
+        self.assertEqual(status["bridge"]["version"], "0.3.1")
         self.assertEqual(
             status["maintenance"]["tool_schema_update"],
             "refresh_chatgpt_connector_then_start_a_new_conversation",
