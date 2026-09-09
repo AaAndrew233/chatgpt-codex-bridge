@@ -28,6 +28,67 @@ EXPECTED_TOOLS = {
 
 
 class ServerSmokeTests(unittest.TestCase):
+    @staticmethod
+    def _run_stdio_request(root: Path, config_path: Path, request: dict) -> tuple[list[dict], int, str]:
+        environment = {
+            **os.environ,
+            "CODEX_BRIDGE_CONFIG": str(config_path),
+            "PYTHONUNBUFFERED": "1",
+        }
+        process = subprocess.Popen(
+            [sys.executable, str(root / "server.py")],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=root,
+            env=environment,
+            text=True,
+            bufsize=1,
+        )
+        assert process.stdin is not None
+        assert process.stdout is not None
+        process.stdin.write(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": "2025-06-18",
+                        "capabilities": {},
+                        "clientInfo": {"name": "test-client", "version": "1.0"},
+                    },
+                }
+            )
+            + "\n"
+        )
+        process.stdin.flush()
+        lines = [process.stdout.readline()]
+        process.stdin.write(
+            json.dumps(
+                {"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}}
+            )
+            + "\n"
+            + json.dumps(request)
+            + "\n"
+        )
+        process.stdin.flush()
+        while True:
+            line = process.stdout.readline()
+            if not line:
+                break
+            lines.append(line)
+            if json.loads(line).get("id") == request.get("id"):
+                break
+        process.stdin.close()
+        process.wait(timeout=20)
+        stderr = process.stderr.read() if process.stderr is not None else ""
+        process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+        responses = [json.loads(line) for line in lines if line.strip()]
+        return responses, process.returncode, stderr
+
     def test_stdio_server_lists_all_public_tools(self) -> None:
         root = Path(__file__).resolve().parent.parent
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -45,59 +106,23 @@ class ServerSmokeTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            messages = [
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "initialize",
-                    "params": {
-                        "protocolVersion": "2025-06-18",
-                        "capabilities": {},
-                        "clientInfo": {"name": "test-client", "version": "1.0"},
-                    },
-                },
-                {
-                    "jsonrpc": "2.0",
-                    "method": "notifications/initialized",
-                    "params": {},
-                },
+            responses, returncode, stderr = self._run_stdio_request(
+                root,
+                config_path,
                 {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
-            ]
-            payload = "".join(json.dumps(item) + "\n" for item in messages).encode()
-            environment = {
-                **os.environ,
-                "CODEX_BRIDGE_CONFIG": str(config_path),
-            }
-
-            completed = subprocess.run(
-                [sys.executable, str(root / "server.py")],
-                input=payload,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=root,
-                env={**environment, "PYTHONUNBUFFERED": "1"},
-                timeout=20,
-                check=False,
             )
-
-        responses = [
-            json.loads(line)
-            for line in completed.stdout.splitlines()
-            if line.strip()
-        ]
         tool_response = next(
             (response for response in responses if response.get("id") == 2),
             None,
         )
         self.assertEqual(
-            completed.returncode,
+            returncode,
             0,
-            completed.stderr.decode("utf-8", errors="replace")[:1000],
+            stderr[:1000],
         )
         self.assertIsNotNone(
             tool_response,
-            completed.stdout.decode("utf-8", errors="replace")
-            + completed.stderr.decode("utf-8", errors="replace")[:2000],
+            "\n".join(json.dumps(item) for item in responses) + stderr[:2000],
         )
         tools = {
             item.get("name")
@@ -105,16 +130,6 @@ class ServerSmokeTests(unittest.TestCase):
         }
         self.assertEqual(tools, EXPECTED_TOOLS)
 
-        status_messages = [
-            messages[0],
-            messages[1],
-            {
-                "jsonrpc": "2.0",
-                "id": 3,
-                "method": "tools/call",
-                "params": {"name": "codex_status", "arguments": {}},
-            },
-        ]
         with tempfile.TemporaryDirectory() as status_dir:
             status_root = Path(status_dir) / "project"
             status_root.mkdir()
@@ -130,38 +145,28 @@ class ServerSmokeTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            status_completed = subprocess.run(
-                [sys.executable, str(root / "server.py")],
-                input=("".join(json.dumps(item) + "\n" for item in status_messages)).encode(),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=root,
-                env={
-                    **os.environ,
-                    "CODEX_BRIDGE_CONFIG": str(status_config),
-                    "PYTHONUNBUFFERED": "1",
+            status_responses, status_returncode, status_stderr = self._run_stdio_request(
+                root,
+                status_config,
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {"name": "codex_status", "arguments": {}},
                 },
-                timeout=20,
-                check=False,
             )
-        status_responses = [
-            json.loads(line)
-            for line in status_completed.stdout.splitlines()
-            if line.strip()
-        ]
         status_response = next(
             (response for response in status_responses if response.get("id") == 3),
             None,
         )
         self.assertEqual(
-            status_completed.returncode,
+            status_returncode,
             0,
-            status_completed.stderr.decode("utf-8", errors="replace")[:1000],
+            status_stderr[:1000],
         )
         self.assertIsNotNone(
             status_response,
-            status_completed.stdout.decode("utf-8", errors="replace")
-            + status_completed.stderr.decode("utf-8", errors="replace")[:2000],
+            "\n".join(json.dumps(item) for item in status_responses) + status_stderr[:2000],
         )
         status_text = status_response["result"]["content"][0]["text"]
         status = json.loads(status_text)
